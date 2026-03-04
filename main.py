@@ -14,10 +14,9 @@ import time
 sys.path.append(str(Path(__file__).parent))
 
 from config import Config
+from frame_text_block import StaticBlockRemover
 
 
-
-from text_detector import TextDetector,BlockTextDetector
 
 
 
@@ -74,12 +73,16 @@ def main():
         elif choice == "3":
             print("\n👋 До свидания!")
             break
-        elif choice == "4":
-                detector = BlockTextDetector()
-                detector.process_video(
-                "downloads/tiktokarawaza_intl/20260220_7609002654106225928_Focus_karate_arawaza_teamarawaza_allthepoweryouneed_fyp.mp4",
-                "downloads/tiktok/detected.mp4"
-)
+        elif choice =="4":
+
+            remover = StaticBlockRemover()
+
+            remover.process_video(
+                "downloads/tiktok/arawaza_intl/20260301_7612246734315605255_karate_favorite_kata_arawaza_fyp.mp4",
+                "refacture/tiktok/cleaned.mp4"
+
+            )
+
         else:
             print("❌ Неверный выбор. Попробуй снова.")
         
