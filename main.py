@@ -82,6 +82,12 @@ def main():
                 "refacture/tiktok/cleaned.mp4"
 
             )
+            image_path = "refacture/tiktok/cleaned_cropped.jpg"
+
+            text = remover.extract_text_from_image(image_path)
+
+            print("Текст в переменной:")
+            print(text)
 
         else:
             print("❌ Неверный выбор. Попробуй снова.")

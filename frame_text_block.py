@@ -32,14 +32,11 @@ class StaticBlockRemover:
         # ---------- ШАГ 2: ищем текст ----------
         roi = first_frame[int(height * 0.6):height, :]
 
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
-
+        thresh = self._preprocess_for_ocr(roi)
         data = pytesseract.image_to_data(
             thresh,
             output_type=pytesseract.Output.DICT,
-            config="--psm 6"
+            config="--psm 4"
         )
 
         boxes = []
@@ -146,3 +143,40 @@ class StaticBlockRemover:
 
         print("✅ Область закрашена на всём видео")
         print("📸 cropped_area.jpg сохранён")
+
+
+    def extract_text_from_image(self, image_path):
+        if not os.path.exists(image_path):
+            print("❌ Файл не найден")
+            return ""
+
+        # читаем изображение
+        image = cv2.imread(image_path)
+        
+        # ИСПОЛЬЗУЕМ ТУ ЖЕ ПРЕДОБРАБОТКУ, ЧТО И В process_video()
+        processed = self._preprocess_for_ocr(image)
+        
+        # OCR
+        text = pytesseract.image_to_string(
+            processed,
+            lang="eng",
+            config="--psm 4"
+        )
+
+        text = text.strip()
+        print("📖 Распознанный текст:")
+        print(text)
+
+        return text
+    def _preprocess_for_ocr(self, roi):
+        # 1. Переводим в градации серого
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        
+        # 2. Легкое размытие для сглаживания шумов (5x5 может быть слишком сильным для мелкого текста)
+        blur = cv2.GaussianBlur(gray, (3, 3), 0)
+        
+        # 3. Ищем только самые светлые пиксели (белый текст).
+        # Инвертируем: белый текст станет ЧЕРНЫМ, а фон и обводка - БЕЛЫМИ.
+        _, thresh = cv2.threshold(blur, 200, 255, cv2.THRESH_BINARY_INV)
+        
+        return thresh
