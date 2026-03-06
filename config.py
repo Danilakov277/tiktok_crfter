@@ -8,6 +8,7 @@ class Config:
     # Instagram данные из .env
     INSTAGRAM_USERNAME = os.getenv('INSTAGRAM_USERNAME')
     INSTAGRAM_PASSWORD = os.getenv('INSTAGRAM_PASSWORD')
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
     
     # Папки для сохранения
     DOWNLOAD_DIR = 'downloads'

@@ -14,7 +14,7 @@ import time
 sys.path.append(str(Path(__file__).parent))
 
 from config import Config
-from frame_text_block import StaticBlockRemover
+from image_to_en_text import StaticBlockRemover
 
 
 
@@ -74,19 +74,18 @@ def main():
             print("\n👋 До свидания!")
             break
         elif choice =="4":
-
-            remover = StaticBlockRemover()
+            # Передаем ключ из конфига
+            remover = StaticBlockRemover(gemini_api_key=config.GEMINI_API_KEY)
 
             remover.process_video(
-                "downloads/tiktok/arawaza_intl/20260301_7612246734315605255_karate_favorite_kata_arawaza_fyp.mp4",
+                "downloads/tiktok/arawaza_intl/20260225_7610852964332342535_karate_arawaza_teamarawaza_kumite_fyp.mp4",
                 "refacture/tiktok/cleaned.mp4"
-
             )
+            
             image_path = "refacture/tiktok/cleaned_cropped.jpg"
-
             text = remover.extract_text_from_image(image_path)
 
-            print("Текст в переменной:")
+            print("\n✅ Итоговый текст в переменной:")
             print(text)
 
         else:

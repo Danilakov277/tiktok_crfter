@@ -1,3 +1,5 @@
 venv/
+downloads/
+refacture/
 __pycache__/
 .env
