@@ -16,7 +16,7 @@ class Config:
     DATABASE_DIR = 'database'
     
     # Максимальное количество видео для скачивания за один раз
-    MAX_VIDEOS_PER_CHANNEL = 3
+    MAX_VIDEOS_PER_CHANNEL = 1
     
     # Список каналов
     CHANNELS = [
