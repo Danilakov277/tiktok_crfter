@@ -1,21 +1,16 @@
 import cv2
 import os
-import pytesseract
+import json
 import numpy as np
 import subprocess
-from pilmoji import Pilmoji
 from google import genai
 from PIL import Image, ImageDraw, ImageFont
 import emoji
 import shutil
 
-
 class StaticBlockRemover:
-
     def __init__(self, gemini_api_key=None):
-
         self.gemini_api_key = gemini_api_key
-
         if gemini_api_key:
             self.client = genai.Client(api_key=gemini_api_key)
         else:
@@ -24,7 +19,6 @@ class StaticBlockRemover:
     # -------------------------------------------------
     # Рисование плашки + текста
     # -------------------------------------------------
-
     def _draw_styled_block(self, frame, text, rect_coords, initial_font_size):
         img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
@@ -42,7 +36,6 @@ class StaticBlockRemover:
         final_line_data = []
         total_h = 0
         
-        # Цикл подбора размера шрифта
         while font_size > 10:
             try:
                 font_text = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", font_size)
@@ -95,13 +88,12 @@ class StaticBlockRemover:
         return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
     # -------------------------------------------------
-    # Основная обработка
+    # Основная обработка через Gemini
     # -------------------------------------------------
-
     def process_video(self, input_path, output_path):
         cap = cv2.VideoCapture(input_path)
         temp_video = "temp_render.mp4"
-        temp_img = "temp_roi.jpg"
+        temp_img = "temp_frame.jpg"
 
         try:
             if not cap.isOpened(): return
@@ -113,64 +105,31 @@ class StaticBlockRemover:
             ret, first_frame = cap.read()
             if not ret: raise Exception("Кадр не захвачен")
 
-            # Фокусируемся на нижней части (TikTok текст обычно там)
-            roi_y_start = int(height * 0.6)
-            roi = first_frame[roi_y_start:height, :]
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            cv2.imwrite(temp_img, first_frame)
+
+            gemini_data = self.analyze_frame_with_gemini(temp_img)
             
-            # Улучшенная бинаризация для белого текста
-            _, thresh = cv2.threshold(gray, 210, 255, cv2.THRESH_BINARY_INV)
-            data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT, config="--psm 11")
-            
-            coords = []
-            for i in range(len(data["text"])):
-                text_str = data["text"][i].strip()
-                conf = int(data["conf"][i])
-                # ИСПРАВЛЕНИЕ: Порог уверенности 70% + проверка на буквы/цифры
-                if conf > 70 and any(c.isalnum() for c in text_str):
-                    coords.append({
-                        'x': data["left"][i], 
-                        'y': data["top"][i], 
-                        'w': data["width"][i], 
-                        'h': data["height"][i]
-                    })
+            if not gemini_data or not gemini_data.get("translation"): 
+                raise Exception("Gemini не нашел текст или не вернул перевод")
 
-            if not coords:
-                print("⚠️ Текст не найден")
-                cap.release()
-                shutil.copy(input_path, output_path)
-                return
+            final_text = gemini_data["translation"]
+            box = gemini_data.get("box", [0, 0, 1000, 1000])
 
-            # ИСПРАВЛЕНИЕ: Фильтрация выбросов (убираем одиночные блоки далеко от центра масс)
-            center_x = np.median([c['x'] + c['w']/2 for c in coords])
-            center_y = np.median([c['y'] + c['h']/2 for c in coords])
-            
-            # Оставляем только те блоки, которые не слишком далеко от «центра» текста
-            filtered_coords = [
-                c for c in coords 
-                if abs((c['x'] + c['w']/2) - center_x) < width * 0.4
-                and abs((c['y'] + c['h']/2) - center_y) < height * 0.2
-            ]
+            ymin_norm, xmin_norm, ymax_norm, xmax_norm = box
 
-            if not filtered_coords: filtered_coords = coords # на всякий случай
+            rect_y1 = int(ymin_norm * height / 1000)
+            rect_x1 = int(xmin_norm * width / 1000)
+            rect_y2 = int(ymax_norm * height / 1000)
+            rect_x2 = int(xmax_norm * width / 1000)
 
-            padding = 25
-            min_x = min(c['x'] for c in filtered_coords)
-            max_x = max(c['x'] + c['w'] for c in filtered_coords)
-            min_y = min(c['y'] for c in filtered_coords)
-            max_y = max(c['y'] + c['h'] for c in filtered_coords)
+            padding = 30
+            rect_x1 = max(0, rect_x1 - padding)
+            rect_x2 = min(width, rect_x2 + padding)
+            rect_y1 = max(0, rect_y1 - padding)
+            rect_y2 = min(height, rect_y2 + padding)
 
-            rect_x1 = max(0, min_x - padding)
-            rect_x2 = width - rect_x1
-            rect_y1 = max(0, roi_y_start + min_y - padding)
-            rect_y2 = min(height, roi_y_start + max_y + padding)
-
-            crop = first_frame[rect_y1:rect_y2, rect_x1:rect_x2]
-            cv2.imwrite(temp_img, crop)
-
-            final_text = self.extract_text_from_image(temp_img)
-            if not final_text or len(final_text.strip()) < 2: 
-                raise Exception("Gemini не нашел осмысленного текста")
+            if (rect_x2 - rect_x1) < 50 or (rect_y2 - rect_y1) < 30:
+                raise Exception("Gemini вернул слишком маленькие координаты для плашки")
 
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(temp_video, fourcc, fps, (width, height))
@@ -196,81 +155,87 @@ class StaticBlockRemover:
                 if os.path.exists(f): 
                     try: os.remove(f)
                     except: pass
-        
-
-        # --------------------------------------
-        # временное видео без звука
-        # --------------------------------------
-
 
     # -------------------------------------------------
-    # Gemini OCR + перевод
+    # Комплексный анализ кадра
     # -------------------------------------------------
-
-    def extract_text_from_image(self, image_path):
-
+    def analyze_frame_with_gemini(self, image_path):
         if not self.client:
-            return ""
+            return None
 
         try:
-
             img = Image.open(image_path)
+            
+            prompt = """
+            Find the main text (like TikTok captions or subtitles) on this image.
+            Perform two tasks:
+            1. Translate the text into Russian. Preserve emojis. Keep the same number of lines if possible.
+            2. Determine the bounding box coordinates of this text.
+            
+            Return ONLY a valid JSON object. Do not include Markdown blocks like ```json. 
+            Format:
+            {
+              "translation": "Твой перевод здесь",
+              "box": [ymin, xmin, ymax, xmax]
+            }
+            
+            The 'box' coordinates MUST be integers from 0 to 1000, representing normalized relative positions on the image (where 0 is top/left edge and 1000 is bottom/right edge).
+            """
 
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash",
+                contents=[prompt, img]
+            )
+            
+            raw_text = response.text.strip()
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[7:-3].strip()
+            elif raw_text.startswith("```"):
+                raw_text = raw_text[3:-3].strip()
+
+            return json.loads(raw_text)
+
+        except Exception as e:
+            print("Ошибка Gemini:", e)
+            return None
+
+    # -------------------------------------------------
+    # Перевод описания
+    # -------------------------------------------------
+    def translate_description_from_file(self, file_path):
+        if not os.path.exists(file_path):
+            print("⚠️ Файл описания не найден.")
+            return ""
+
+        if not self.client:
+            print("❌ Клиент Gemini не инициализирован.")
+            return ""
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                original_text = f.read()
+
+            if not original_text.strip():
+                return ""
+
+            print("📝 Перевожу описание видео...")
+            response = self.client.models.generate_content(
+                model="gemini-2.5-flash",
                 contents=[
-                    "Распознай текст на картинке. Переведи его на русский. "
-                    "ВАЖНО: Сохрани точно такое же количество строк, как на картинке. "
-                    "Если на картинке текст в две строки — верни две строки. "
-                    "Сохрани все эмодзи. Не пиши ничего, кроме перевода.", 
-                    img
+                    "Переведи это описание видео из TikTok на русский язык. "
+                    "ВАЖНО: Сохрани все оригинальные хештеги (не переводи их, оставь как есть) "
+                    "Если на картинке нет осмысленного текста, верни пустую строку "
+                    "и сохрани все эмодзи. Выдай только готовый переведенный текст без лишних комментариев:\n\n"
+                    + original_text
                 ]
             )
-
+            os.remove(file_path)
             return response.text.strip()
 
         except Exception as e:
-
-            print("Ошибка Gemini:", e)
-            return ""
-
-    def translate_description_from_file(self, file_path):
-            """
-            Читает текстовый файл описания, отправляет в Gemini 
-            и возвращает переведенную строку.
-            """
-            if not os.path.exists(file_path):
-                print("⚠️ Файл описания не найден.")
-                return ""
-
-            if not self.client:
-                print("❌ Клиент Gemini не инициализирован.")
-                return ""
-
+            print(f"❌ Ошибка при чтении или переводе описания: {e}")
             try:
-                # Читаем оригинальный текст из файла
-                with open(file_path, "r", encoding="utf-8") as f:
-                    original_text = f.read()
-
-                if not original_text.strip():
-                    return ""
-
-                # Отправляем в нейросеть
-                print("📝 Перевожу описание видео...")
-                response = self.client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=[
-                        "Переведи это описание видео из TikTok на русский язык. "
-                        "ВАЖНО: Сохрани все оригинальные хештеги (не переводи их, оставь как есть) "
-                        "Если на картинке нет осмысленного текста, верни пустую строку" 
-                        "и сохрани все эмодзи. Выдай только готовый переведенный текст без лишних комментариев:\n\n"
-                        + original_text
-                    ]
-                )
                 os.remove(file_path)
-                return response.text.strip()
-
-            except Exception as e:
-                print(f"❌ Ошибка при чтении или переводе описания: {e}")
-                os.remove(file_path)
-                return ""
+            except:
+                pass
+            return ""

@@ -1,18 +1,25 @@
 import json
 import time
 import os
-import undetected_chromedriver as uc
+import platform
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium_stealth import stealth
 
-CAPTION = "Auto upload test 🚀"
+# Условный импорт для Linux (виртуальный дисплей)
+if platform.system() == "Linux":
+    from xvfbwrapper import Xvfb
+else:
+    Xvfb = None
 
 def load_cookies(driver, path):
     if not os.path.exists(path):
         print(f"[ERROR] Файл с куки не найден: {path}")
         return False
-        
     with open(path, "r", encoding="utf-8") as file:
         cookies = json.load(file)
         for cookie in cookies:
@@ -24,103 +31,137 @@ def load_cookies(driver, path):
                 pass
     return True
 
-def tiktok_upload(video_path_relative):
-    # ПУТЬ 1: Папка, где лежит этот скрипт (D:\...\avtoposting)
+def tiktok_upload(video_path_relative, caption):
+    # 1. Пути и настройки
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # ПУТЬ 2: Корень проекта (D:\...\inst_tt_progect)
     project_root = os.path.dirname(script_dir)
-    
-    # Собираем абсолютные пути
     absolute_video_path = os.path.normpath(os.path.join(project_root, video_path_relative))
-    # Куки лежат в папке cookies внутри avtoposting
-    cookies_path = os.path.normpath(os.path.join(script_dir, "cookies", "tiktok.json"))
+    cookies_path = os.path.join(script_dir, "cookies", "tiktok.json")
 
-    if not os.path.exists(absolute_video_path):
-        print(f"[ERROR] Видео не найдено: {absolute_video_path}")
+    # 2. Инициализация дисплея (только для Linux)
+    vdisplay = None
+    if Xvfb:
+        vdisplay = Xvfb(width=1280, height=720)
+        vdisplay.start()
+
+    # 3. Настройка стандартного Chrome Options
+    options = webdriver.ChromeOptions()
+    
+    # Отключаем флаги автоматизации для обхода детектов TikTok
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    
+    if platform.system() == "Linux":
+        options.add_argument("--headless=new") 
+
+    print("[INFO] Проверка и автозагрузка подходящего Chrome-драйвера...")
+    service = Service(ChromeDriverManager().install())
+
+    print("[INFO] Запуск браузера...")
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+        
+        # Применяем stealth-маскировку
+        stealth(driver,
+                languages=["ru-RU", "ru", "en-US", "en"],
+                vendor="Google Inc.",
+                platform="Win32" if platform.system() == "Windows" else "Linux x86_64",
+                webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine",
+                fix_hairline=True,
+        )
+    except Exception as e:
+        print(f"[FATAL ERROR] Не удалось запустить браузер: {e}")
+        if vdisplay: vdisplay.stop()
         return
 
-    options = uc.ChromeOptions()
-    options.add_argument("--start-maximized")
-    driver = uc.Chrome(options=options)
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, 40)
 
     try:
-        print("[INFO] Открываем TikTok...")
-        driver.get("https://www.tiktok.com")
-        time.sleep(3)
-
-        print(f"[INFO] Загружаем cookies из: {cookies_path}")
-        if not load_cookies(driver, cookies_path):
-            return
-            
+        print("[INFO] Переход на TikTok...")
+        driver.get("https://www.tiktok.com/upload")
+        load_cookies(driver, cookies_path)
         driver.refresh()
         time.sleep(5)
 
-        print("[INFO] Переходим на страницу загрузки...")
-        driver.get("https://www.tiktok.com/creator-center/upload")
-
-        print("[INFO] Загружаем файл...")
-        upload_input = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='file' or @accept='video/*']")))
-        upload_input.send_keys(absolute_video_path)
-
-        print("[INFO] Вводим описание (с поддержкой эмодзи)...")
-        caption_box = wait.until(EC.element_to_be_clickable((By.XPATH, "//div[@contenteditable='true']")))
+        print("[INFO] Загрузка файла...")
+        file_input = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='file']")))
+        file_input.send_keys(absolute_video_path)
         
-        # 1. Сначала кликаем и фокусируемся на поле
+        # Небольшая пауза, чтобы файл подцепился формой
+        time.sleep(3)
+
+        print("[INFO] Ввод описания...")
+        # Ищем по data-e2e или по contenteditable для надежности
+        caption_box = wait.until(EC.presence_of_element_located((
+            By.XPATH, "//div[@data-e2e='editor-caption-input'] | //div[@contenteditable='true']"
+        )))
+        
+        # Фокусируем поле через JS
         driver.execute_script("arguments[0].focus();", caption_box)
         time.sleep(1)
         
-        # 2. Очищаем поле (если там что-то было)
-        caption_box.clear() 
+        # Очищаем содержимое
+        driver.execute_script("arguments[0].innerHTML = '';", caption_box)
+        time.sleep(1)
 
-        # 3. Вставляем текст через JavaScript execCommand
-        # Это позволяет вставить эмодзи без ошибки ChromeDriver BMP
-        js_script = "document.execCommand('insertText', false, arguments[0]);"
-        driver.execute_script(js_script, CAPTION)
+        # Безопасный ввод текста с эмодзи через execCommand (в обход ограничений ChromeDriver)
+        driver.execute_script("document.execCommand('insertText', false, arguments[0]);", caption)
+        print("[INFO] Описание успешно введено.")
         
-        print(f"[INFO] Текст '{CAPTION}' успешно вставлен.")
+        # Даем видео время полностью загрузиться на сервер перед публикацией
+        print("[INFO] Ожидание завершения загрузки видео...")
+        time.sleep(12) 
 
-# 5. Ожидание кнопки публикации и нажатие
-        print("[INFO] Ждем готовности кнопки публикации...")
-        # Увеличим время, так как видео должно прогрузиться на 100%
-        time.sleep(10) 
-        
-        # Ищем кнопку по data-e2e (это самый надежный способ в TikTok)
-        post_button = wait.until(EC.presence_of_element_located((By.XPATH, "//button[@data-e2e='post_video_button']")))
-
-        print("[INFO] Нажимаем кнопку 'Опубликовать' через JavaScript (обход обучающих окон)...")
-        # Кликаем через JS, игнорируя react-joyride__overlay и любые другие всплывашки
+        print("[INFO] Нажатие первой кнопки публикации...")
+        post_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@data-e2e='post_video_button']")))
         driver.execute_script("arguments[0].click();", post_button)
-        
-        print("[SUCCESS] Кнопка нажата! Видео отправляется на сервер...")
-        # Даем время на завершение запроса перед закрытием браузера
-        print("[INFO] Ждем готовности основной кнопки публикации...")
-        time.sleep(10) 
-        
-        # Ищем основную кнопку
-        post_button = wait.until(EC.presence_of_element_located((By.XPATH, "//button[@data-e2e='post_video_button']")))
-        print("[INFO] Нажимаем основную кнопку через JS...")
-        driver.execute_script("arguments[0].click();", post_button)
-        
-        # --- НОВЫЙ БЛОК: Финальное подтверждение ---
-        print("[INFO] Проверяем наличие финального виджета подтверждения...")
-        try:
-            # Ждем появления финальной кнопки в модальном окне (обычно у нее data-e2e='post-button')
-            # Если TikTok изменил атрибут, используем поиск по тексту "Post" или "Опубликовать"
-            final_post_button = wait.until(EC.presence_of_element_located((
-                By.XPATH, "//div[contains(@class, 'modal')]//button[contains(., 'Post') or contains(., 'Опубликовать')]"
-            )))
-            
-            print("[INFO] Нажимаем финальную кнопку подтверждения...")
-            driver.execute_script("arguments[0].click();", final_post_button)
-            print("[SUCCESS] Видео окончательно опубликовано!")
-        except Exception as e:
-            print("[INFO] Финальный виджет не появился или кнопка не найдена (возможно, видео ушло сразу).")
-        
-        time.sleep(15) 
+
+        # --- ОБРАБОТКА ОКНА ПОДТВЕРЖДЕНИЯ (НОВОЕ) ---
+        print("[INFO] Ожидание возможного окна подтверждения от TikTok...")
+        time.sleep(4) # Даем всплывающему окну время появиться
+
+        # Массив возможных путей до кнопки согласия на разных языках и кейсах
+        confirm_xpaths = [
+            "//button[contains(text(), 'Post anyway')]",
+            "//button[contains(text(), 'Все равно опубликовать')]",
+            "//button[contains(text(), 'Confirm')]",
+            "//button[contains(text(), 'Подтвердить')]",
+            "//button[contains(text(), 'Post')]",
+            "//button[contains(text(), 'Опубликовать')]",
+            "//div[contains(@class, 'modal')]//button[contains(@class, 'primary')]", # Основная кнопка в модалке
+            "//div[contains(@class, 'modal')]//button[2]" # Обычно "Отмена" слева (1), а "Опубликовать" справа (2)
+        ]
+
+        modal_clicked = False
+        for xpath in confirm_xpaths:
+            try:
+                # Пытаемся быстро найти кнопку подтверждения на экране
+                confirm_button = driver.find_element(By.XPATH, xpath)
+                if confirm_button.is_displayed() and confirm_button.is_enabled():
+                    print(f"[INFO] Найдено окно подтверждения! Кликаем по кнопке: {xpath}")
+                    driver.execute_script("arguments[0].click();", confirm_button)
+                    modal_clicked = True
+                    break
+            except Exception:
+                continue
+
+        if not modal_clicked:
+            print("[INFO] Окно дополнительного подтверждения не появилось. Видео ушло на публикацию напрямую.")
+
+        print("[SUCCESS] Видео отправлено!")
+        # Даем 15 секунд, чтобы TikTok успел обработать запрос на сервере до закрытия браузера
+        time.sleep(15)
 
     except Exception as e:
-        print(f"[ERROR] Ошибка в Selenium: {e}")
+        print(f"[ERROR] Ошибка при работе с сайтом: {e}")
     finally:
+        print("[INFO] Закрытие браузера...")
         driver.quit()
+        if vdisplay:
+            vdisplay.stop()
